@@ -1,0 +1,118 @@
+---
+- name: Bootstrap MULTIPLE new Ansible Managed Nodes
+  hosts: localhost
+  connection: local
+  
+  vars:
+    nodes_to_create:
+      - name: "ansible-node1"
+        port: 2222
+      - name: "ansible-node2"
+        port: 2223
+      - name: "ansible-node3"
+        port: 2224
+    ansible_user: "ansible"
+    ansible_password: "ansible"
+
+  tasks:
+    - name: Remove old host keys from known_hosts to prevent errors
+      ansible.builtin.known_hosts:
+        name: "[localhost]:{{ item.port }}"
+        state: absent
+      loop: "{{ nodes_to_create }}"
+
+    - name: Ensure old containers are removed
+      containers.podman.podman_container:
+        name: "{{ item.name }}"
+        state: absent
+      loop: "{{ nodes_to_create }}"
+
+    - name: Create and start fresh Ubuntu containers
+      containers.podman.podman_container:
+        name: "{{ item.name }}"
+        image: ubuntu:22.04
+        state: started
+        command: "sleep infinity"
+        ports:
+          - "{{ item.port }}:22"
+      loop: "{{ nodes_to_create }}"
+
+    - name: Wait for all containers to be ready
+      pause:
+        seconds: 10
+
+    - name: Install required software in all containers
+      command: >
+        podman exec "{{ item.name }}" bash -c
+        "apt-get update &&
+         apt-get install -y openssh-server python3 sudo"
+      loop: "{{ nodes_to_create }}"
+
+    - name: Create the ansible user in all containers
+      command: >
+        podman exec "{{ item.name }}" bash -c
+        "useradd -m -s /bin/bash {{ ansible_user }}"
+      loop: "{{ nodes_to_create }}"
+
+    - name: Set temporary password in all containers
+      command: >
+        podman exec "{{ item.name }}" bash -c
+        "echo '{{ ansible_user }}:{{ ansible_password }}' | chpasswd"
+      loop: "{{ nodes_to_create }}"
+
+    - name: Grant passwordless sudo in all containers
+      command: >
+        podman exec "{{ item.name }}" bash -c
+        "echo '{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"
+      loop: "{{ nodes_to_create }}"
+
+    - name: Start the SSH service in all containers
+      command: >
+        podman exec "{{ item.name }}" service ssh start
+      loop: "{{ nodes_to_create }}"
+
+    - name: Copy SSH public key to all containers
+      command: >
+        sshpass -p "{{ ansible_password }}"
+        ssh-copy-id -o StrictHostKeyChecking=no -p {{ item.port }}
+        -i ~/.ssh/id_ecdsa.pub {{ ansible_user }}@localhost
+      loop: "{{ nodes_to_create }}"
+
+    - name: Ensure all new nodes are in the inventory file
+      lineinfile:
+        path: "./inventory"
+        line: "{{ item.name }} ansible_host=localhost ansible_port={{ item.port }}"
+        create: yes
+        regexp: "^{{ item.name }}\\s"
+      loop: "{{ nodes_to_create }}"
+
+    - name: Add a group header to the inventory file
+      # This is a nice touch to keep the inventory organized.
+      lineinfile:
+        path: "./inventory"
+        line: "[servers]"
+        insertbefore: BOF # Beginning Of File
+
+    - name: Create the inventory file and manage the [servers] block
+      ansible.builtin.blockinfile:
+        path: "./inventory"
+        create: yes # Create the file if it doesn't exist
+        # This marker tells blockinfile where its managed block begins and ends.
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - SERVERS"
+        block: |
+          [servers]
+          {% for node in nodes_to_create %}
+          {{ node.name }} ansible_host=localhost ansible_port={{ node.port }}
+          {% endfor %}
+
+    - name: Manage the [all:vars] block in the inventory file
+      ansible.builtin.blockinfile:
+        path: "./inventory"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - VARS"
+        block: |
+          [all:vars]
+          ansible_user={{ ansible_user }}
+          ansible_ssh_private_key_file=~/.ssh/id_ecdsa
+          ansible_python_interpreter=/usr/bin/python3
+          ansible_become=true
+          ansible_become_method=sudo
