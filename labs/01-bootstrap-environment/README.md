@@ -9,6 +9,7 @@ This lab contains a single playbook, `bootstrap-lab-environment.yml`, designed t
 *   sshpass: `brew install sshpass`
 *   Ansible: `brew install ansible`
 *   Ansible Podman Collection: `ansible-galaxy collection install containers.podman`
+*   ssh-keygen: `ssh-keygen -t ecdsa`
 
 ### How to Run
 
